@@ -1,0 +1,34 @@
+[package]
+name = "MiHeartbeat"
+version = "1.0.0-beta01"
+description = "手环心率广播桌面端"
+authors = ["maybug"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "MiHeartbeat_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = ["unstable"]
+unstable = []
+
+[build-dependencies]
+tauri-build = { version = "2.5.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.9.5", features = ["tray-icon"] }
+tauri-plugin-opener = "2.5.3"
+dirs = "5.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.45.1", features = ["macros", "rt-multi-thread", "time"] }
+bluest = "0.6.8"
+futures-lite = "2.6.0"
+tauri-plugin-os = "2"
+
