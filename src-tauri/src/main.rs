@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    MiHeartbeat_lib::run()
+    mi_heartbeat_lib::run()
 }
 
 
