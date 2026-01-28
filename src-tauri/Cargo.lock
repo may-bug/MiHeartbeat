@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "MiHeartbeat"
-version = "1.0.0-alpha"
+version = "1.0.0"
 dependencies = [
  "bluest",
  "dirs 5.0.1",

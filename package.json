@@ -2,7 +2,7 @@
   "name": "MiHeartbeat",
   "license": "MIT",
   "private": true,
-  "version": "1.0.0-alpha",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
