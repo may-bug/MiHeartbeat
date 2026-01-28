@@ -7,6 +7,7 @@ import { createToolWindow } from "../utils/window.js";
 import { isImagePath, getDeviceIcon } from "../utils/image.js";
 import { useRoute } from "vue-router";
 import { getCurrentWindow, Window } from "@tauri-apps/api/window";
+import { useDialog } from "../composables/useDialog.js";
 
 const route = useRoute();
 const deviceId = ref("");
@@ -40,7 +41,7 @@ const startMonitoring = async () => {
         await invoke("start_heart_rate_stream", {
             deviceId: deviceId.value
         });
-        emit("tool-data-service", { data: { deviceId: deviceId.value, deviceName: deviceName.value } });
+        await emit("tool-data-service", {data: {deviceId: deviceId.value, deviceName: deviceName.value}});
 
         // 监听心率事件
         if (!unlistenHeartRate) {
@@ -61,7 +62,7 @@ const startMonitoring = async () => {
         }
     } catch (error) {
         console.error("Error starting heart rate stream:", error);
-        alert("启动心率监测失败: " + error);
+        useDialog("error","启动心率监测失败: " + error);
         isStreaming.value = false;
         connectionStatus.value = "disconnected";
     }
@@ -93,7 +94,6 @@ const toggleMonitoring = async () => {
 
 const openFloatingWidget =async () => {
     let win =await Window.getByLabel("tool");
-    console.log("tool window:", win);
     if (toolwindowState.value.isOpen) {
         await win.hide();
         toolwindowState.value.text = "开启悬浮窗";
@@ -117,36 +117,41 @@ const openFloatingWidget =async () => {
     toolwindowState.value.isOpen = !toolwindowState.value.isOpen;
 }
 
+const closeWidget = async () => {
+  if (isStreaming.value) {
+    await stopMonitoring();
+  }
+  let win = await Window.getByLabel("main");
+  if (win) {
+    await win.show();
+  }
+  let toolWin = await Window.getByLabel("tool");
+  if (toolWin) {
+    await toolWin.close();
+  }
+  await getCurrentWindow().close();
+};
+
+const initListen=()=>{
+  listen("tool-ready",(event)=>{
+    console.log(event.payload)
+    emit("tool-ready-data",event);
+  })
+}
+
 onMounted(async () => {
+    initListen();
     deviceId.value = decodeURIComponent(route.params.id) || '';
     deviceName.value = decodeURIComponent(route.params.name) || 'Unknown Device';
     deviceIcon.value = await getDeviceIcon(deviceName.value);
     connectionStatus.value = "disconnected";
-    console.log("Device view opened for:", deviceId.value, deviceName.value);
 });
 
-const closeWidget = async () => {
-    if (isStreaming.value) {
-        await stopMonitoring();
-    }
-    let win = await Window.getByLabel("main");
-    if (win) {
-        await win.show();
-    }
-    let toolWin = await Window.getByLabel("tool");
-    if (toolWin) {
-        await toolWin.close();
-    }
-    await getCurrentWindow().close();
-};
-
 onUnmounted(() => {
-    // 清理事件监听
     if (unlistenHeartRate) {
         unlistenHeartRate();
         unlistenHeartRate = null;
     }
-    // 停止监测
     if (isStreaming.value) {
         stopMonitoring();
     }
@@ -158,7 +163,6 @@ onUnmounted(() => {
         <TitleBar :title="deviceName" :onClose="closeWidget" />
 
         <div class="content">
-            <!-- 心率显示卡片 -->
             <div class="heart-rate-display">
                 <div class="icon-and-status">
                     <div class="device-icon-wrapper">
@@ -185,7 +189,6 @@ onUnmounted(() => {
                     <span v-if="sensorContact" class="contact-good">✓ 传感器贴合</span>
                     <span v-else class="contact-bad">✗ 传感器未贴合</span>
                 </div>
-                <!-- 控制按钮 -->
                 <div class="button-group">
                     <button @click="toggleMonitoring" class="btn" :class="isStreaming ? 'btn-stop' : 'btn-start'">
                         {{ isStreaming ? '停止监测' : '开始监测' }}
@@ -198,10 +201,6 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-* {
-    box-sizing: border-box;
-}
-
 .device-container {
     width: 100%;
     height: 100vh;
@@ -244,6 +243,7 @@ onUnmounted(() => {
     margin-bottom: 12px;
     border-radius: 10px;
     overflow: hidden;
+    flex: 1;
 }
 
 .device-image {
@@ -270,6 +270,7 @@ onUnmounted(() => {
     flex-direction: column;
     align-items: center;
     gap: 4px;
+    flex: 1;
 }
 
 .status-dot {

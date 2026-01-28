@@ -1,15 +1,15 @@
 <script setup>
-import { onMounted, ref, onUnmounted, computed } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { useRoute } from "vue-router";
+import {onMounted, ref, onUnmounted, computed} from "vue";
+import {invoke} from "@tauri-apps/api/core";
+import {emit, listen} from "@tauri-apps/api/event";
+import {useRoute} from "vue-router";
 
 const route = useRoute();
 const deviceId = ref("");
 const deviceName = ref("");
 const heartRate = ref(0);
 const isStreaming = ref(false);
-const eventRef=ref(null);
+const eventRef = ref(null);
 const settings = ref({
   opacity: 0.85,
   always_on_top: true,
@@ -41,10 +41,10 @@ const toggleMonitoring = async () => {
 const startMonitoring = async () => {
   try {
     isStreaming.value = true;
-    await invoke("start_heart_rate_stream", { 
-      deviceId: deviceId.value 
+    await invoke("start_heart_rate_stream", {
+      deviceId: deviceId.value
     });
-    
+
     if (!unlistenHeartRate) {
       unlistenHeartRate = await listen("heart-rate-update", (event) => {
         const rate = event.payload;
@@ -76,23 +76,30 @@ const stopMonitoring = async () => {
 const animationDuration = computed(() => {
   const speed = settings.value.animation_speed;
   switch (speed) {
-    case "fast": return "0.6s";
-    case "slow": return "1.4s";
-    default: return "1s";
+    case "fast":
+      return "0.6s";
+    case "slow":
+      return "1.4s";
+    default:
+      return "1s";
   }
 });
-const installListen=()=>{
-    eventRef.value=listen("tool-data-service",(event)=>{
-        console.log("tool-data-service event:",event.payload);
-    });
+const initListen = () => {
+  eventRef.value = listen("tool-data-service", (event) => {
+    console.log("tool-data-service event:", event.payload);
+  });
+  listen("tool-ready-data", (event) => {
+    console.log("event", event.payload);
+  })
+  emit("tool-ready",{
+    status: true
+  });
 }
 onMounted(async () => {
+  initListen();
   deviceId.value = decodeURIComponent(route.params.id) || '';
   deviceName.value = decodeURIComponent(route.params.name) || 'Device';
   await loadSettings();
-  installListen();
-  // 自动开始监测
-  await startMonitoring();
 });
 
 onUnmounted(() => {
@@ -108,8 +115,8 @@ onUnmounted(() => {
 
 <template>
   <div class="app-container">
-    <div 
-      class="floating-widget"
+    <div
+        class="floating-widget"
     >
       <div class="widget-content">
         <div class="heart-icon">❤️</div>
@@ -120,12 +127,6 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
 .app-container {
   width: 100%;
   height: 100%;
@@ -181,11 +182,21 @@ onUnmounted(() => {
 }
 
 @keyframes heartbeat {
-  0%, 100% { transform: scale(1); }
-  20% { transform: scale(1.12); }
-  40% { transform: scale(1); }
-  60% { transform: scale(1.08); }
-  80% { transform: scale(1); }
+  0%, 100% {
+    transform: scale(1);
+  }
+  20% {
+    transform: scale(1.12);
+  }
+  40% {
+    transform: scale(1);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  80% {
+    transform: scale(1);
+  }
 }
 
 .heart-rate {

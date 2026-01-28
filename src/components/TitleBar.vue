@@ -43,6 +43,7 @@ const openSettings = () => {
     <div class="titlebar-left">
       <h1 class="app-title">{{ title }}</h1>
     </div>
+    <div class="flex"></div>
     <div class="titlebar-right">
       <button 
         v-if="showSettings"
@@ -84,10 +85,11 @@ const openSettings = () => {
   user-select: none;
   flex-shrink: 0;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  -webkit-app-region: drag;
 }
 
-.titlebar-left {
-  flex: 1;
+.flex{
+  flex-grow: 1;
 }
 
 .app-title {
@@ -96,6 +98,9 @@ const openSettings = () => {
   font-weight: 600;
   color: #333;
   letter-spacing: 0.5px;
+}
+.app-title:hover{
+  cursor: pointer;
 }
 
 .titlebar-right {

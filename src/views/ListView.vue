@@ -137,7 +137,7 @@ const selectDevice = async (device) => {
         createDeviceWindow(`/device/${encodedId}/${encodedName}`, device.name);
         selectedDevice.value = device;
         isConnecting.value = true;
-        hideWindow("main")
+        await hideWindow("main")
         await invoke("select_device", { id: device.id });
     } catch (error) {
         selectedDevice.value = null;
@@ -250,10 +250,6 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-* {
-    box-sizing: border-box;
-}
-
 .container {
     width: 100%;
     height: 100vh;
@@ -405,18 +401,12 @@ onUnmounted(() => {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
-.control-center {
-    flex: 1;
-    text-align: center;
-}
-
 .control-right {
     flex: 0 0 auto;
 }
 
 .btn-refresh {
     padding: 5px 10px;
-    border: none;
     border-radius: 8px;
     background: rgba(76, 175, 80, 0.1);
     color: #4caf50;

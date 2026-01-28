@@ -7,8 +7,8 @@ const createDeviceWindow = (params,name,options) => {
     let label = 'device';
     let deviceWindow = new WebviewWindow(label,{
         url: 'index.html#' + params,
-        width: 400,
-        height: 400,
+        width: 450,
+        height: 550,
         title: name || '设备详情',
         decorations: false,
         devtools:true,
@@ -54,7 +54,6 @@ const createSettingWindow = (params, name, options) => {
         title: name || '设置',
         decorations: false,
         devtools: true,
-        transparent: true,
         ...options
     });
     windows.set(label, settingWindow);

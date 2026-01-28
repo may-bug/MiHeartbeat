@@ -147,12 +147,6 @@ const openLink = async (url) => {
 </template>
 
 <style scoped>
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
 .about-container {
   width: 100%;
   height: 100vh;
