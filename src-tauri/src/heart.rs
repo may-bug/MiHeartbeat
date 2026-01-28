@@ -18,6 +18,8 @@ const MAX_DEVICES: usize = 100;
 const MAC_ADDRESS_LENGTH: usize = 12;
 
 // Linux D-Bus 优化常量
+const DBUS_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+const OPERATION_DELAY: Duration = Duration::from_millis(300);
 const MAX_RETRIES: u32 = 5;
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
