@@ -1,5 +1,6 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 
 const windows = new Map();
 
@@ -7,8 +8,8 @@ const createDeviceWindow = (params,name,options) => {
     let label = 'device';
     let deviceWindow = new WebviewWindow(label,{
         url: 'index.html#' + params,
-        width: 450,
-        height: 550,
+        width: 400,
+        height: 400,
         title: name || '设备详情',
         decorations: false,
         devtools:true,
@@ -96,4 +97,23 @@ const showWindow = async (label) => {
     }
 }
 
-export { createDeviceWindow,createToolWindow,createSettingWindow, minimizeWindow, closeWindow, hideWindow, showWindow };
+// 禁用窗口操作
+const disableWindowOperations = async () => {
+    try {
+        const win = getCurrentWindow();
+        await invoke('disable_window_operations', {
+            label: win.label
+        });
+    } catch (error) {
+        console.error('Failed to disable window operations:', error);
+    }
+};
+
+// 根据窗口标签禁用窗口操作
+const disableWindowByLabel = async (windowLabel) => {
+    await invoke('disable_window_operations', {
+        label: windowLabel
+    });
+};
+
+export { createDeviceWindow,createToolWindow,createSettingWindow, minimizeWindow, closeWindow, hideWindow, showWindow,disableWindowOperations, disableWindowByLabel };

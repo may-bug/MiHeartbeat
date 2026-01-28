@@ -35,13 +35,12 @@ const startMonitoring = async () => {
     try {
         isStreaming.value = true;
         connectionStatus.value = "connecting";
-        console.log("Starting heart rate stream for device:", deviceId.value);
+        await emit("tool-data-service", { deviceId: deviceId.value, deviceName: deviceName.value, status: true });
 
         // 启动后端心率流
         await invoke("start_heart_rate_stream", {
             deviceId: deviceId.value
         });
-        await emit("tool-data-service", {data: {deviceId: deviceId.value, deviceName: deviceName.value}});
 
         // 监听心率事件
         if (!unlistenHeartRate) {
@@ -61,26 +60,38 @@ const startMonitoring = async () => {
             });
         }
     } catch (error) {
-        console.error("Error starting heart rate stream:", error);
-        useDialog("error","启动心率监测失败: " + error);
-        isStreaming.value = false;
-        connectionStatus.value = "disconnected";
+        try{
+            let data = await invoke("is_heart_rate_streaming");
+            isStreaming.value = data;
+            connectionStatus.value = "connected";
+            await emit("tool-data-service", { deviceId: deviceId.value, deviceName: deviceName.value, status: true });
+        }catch(e){
+            console.error("Error checking heart rate streaming status:", e);
+            useDialog.error("启动心率监测失败: " + error);
+            isStreaming.value = false;
+            connectionStatus.value = "disconnected";
+            await emit("tool-data-service", {deviceId: deviceId.value, deviceName: deviceName.value, status: false });
+        }
     }
 };
 
 const stopMonitoring = async () => {
     try {
+        heartRate.value = 0;
         isStreaming.value = false;
-        connectionStatus.value = "disconnected";
-        console.log("Stopping heart rate stream");
+        connectionStatus.value = "disconnected";;
         if (unlistenHeartRate) {
             unlistenHeartRate();
             unlistenHeartRate = null;
         }
-
+        emit("tool-data-service", {
+            deviceId: deviceId.value,
+            deviceName: deviceName.value,
+            status: false
+        });
         await invoke("stop_heart_rate_stream");
     } catch (error) {
-        console.error("Error stopping heart rate stream:", error);
+        useDialog.error("启动心率监测失败: " + error);
     }
 };
 
@@ -121,6 +132,11 @@ const closeWidget = async () => {
   if (isStreaming.value) {
     await stopMonitoring();
   }
+  emit("main-data-service", {
+      deviceId: deviceId.value,
+      deviceName: deviceName.value,
+    status: false
+  });
   let win = await Window.getByLabel("main");
   if (win) {
     await win.show();
@@ -134,8 +150,13 @@ const closeWidget = async () => {
 
 const initListen=()=>{
   listen("tool-ready",(event)=>{
-    console.log(event.payload)
-    emit("tool-ready-data",event);
+    if(event.payload.status);{
+        emit("tool-data-service", {
+            deviceId: deviceId.value,
+            deviceName: deviceName.value,
+            status: isStreaming.value
+        });
+    }
   })
 }
 
@@ -168,7 +189,7 @@ onUnmounted(() => {
                     <div class="device-icon-wrapper">
                         <img v-if="isImagePath(deviceIcon)" :src="deviceIcon" :alt="deviceName" class="device-image" />
                         <div v-else class="device-icon">
-                            {{ typeof deviceIcon === 'string' ? deviceIcon : '📱' }}
+                            {{ typeof deviceIcon === 'string' ? deviceIcon : 'other' }}
                         </div>
                     </div>
                     <div class="connection-status" :class="connectionStatus">
@@ -259,7 +280,7 @@ onUnmounted(() => {
 .icon-and-status {
     position: relative;
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     justify-content: center;
     gap: 12px;
     margin-bottom: 12px;
@@ -270,6 +291,7 @@ onUnmounted(() => {
     flex-direction: column;
     align-items: center;
     gap: 4px;
+    height: 100%;
     flex: 1;
 }
 
@@ -371,7 +393,7 @@ onUnmounted(() => {
 }
 
 .rate {
-    font-size: 2.5em;
+    font-size: 2em;
     font-weight: 700;
     color: #ff3b30;
 }

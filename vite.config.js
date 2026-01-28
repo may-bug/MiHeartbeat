@@ -1,20 +1,10 @@
 import { defineConfig } from "vite";
-import { viteStaticCopy } from 'vite-plugin-static-copy';
 import vue from "@vitejs/plugin-vue";
 
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig(async () => ({
-    plugins: [vue(),
-    viteStaticCopy({
-        targets: [
-            {
-                src: 'src/assets/images/**',
-                dest: 'assets/images'
-            }
-        ]
-    })
-    ],
+    plugins: [vue()],
     clearScreen: false,
     server: {
         port: 1420,

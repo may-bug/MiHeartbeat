@@ -7,6 +7,7 @@ import { hideWindow, createDeviceWindow } from "../utils/window";
 import { getDeviceIcon, isImagePath, getPlatformIcon } from "../utils/image";
 import BLUETOOTH from "../assets/icons/bluetooth.svg";
 import { listen } from '@tauri-apps/api/event';
+import { useDialog } from "../composables/useDialog";
 
 const bluetooth = ref(false);
 const deviceList = ref([]);
@@ -33,7 +34,7 @@ const getPlatformInfo = async () => {
         };
         platformInfo.value.icon = await getPlatformIcon(currentPlatform);
     } catch (error) {
-        console.error("Error getting platform info:", error);
+        useDialog.error("获取平台信息失败: " + error);
         platformInfo.value = {
             type: 'Unknown'
         };
@@ -58,7 +59,7 @@ const checkBluetooth = async () => {
             startRetry();
         }
     } catch (error) {
-        console.error('Failed to check Bluetooth:', error);
+        useDialog.error("检查蓝牙状态失败: " + error);
         bluetooth.value = false;
         startRetry();
     }
@@ -106,7 +107,6 @@ const getDeviceList = async () => {
     try {
         isScanning.value = true;
         let devices = await invoke("list_devices");
-        console.log("Discovered devices:", devices);
         deviceList.value = devices;
         for (const device of devices) {
             if (device.name && !deviceIcons.value[device.id]) {
@@ -114,7 +114,7 @@ const getDeviceList = async () => {
             }
         }
     } catch (error) {
-        console.error("Error getting device list:", error);
+        useDialog.error("获取设备列表失败: " + error);
     } finally {
         isScanning.value = false;
     }
@@ -146,16 +146,17 @@ const selectDevice = async (device) => {
     }
 };
 
-const addListeners = () => {
+const initListen = () => {
     listen("main-data-service", (event) => {
-        console.log("Device connected:", event.payload);
-        isConnecting.value = false;
+        isConnecting.value = event.payload.status;
+        selectedDevice.value=null;
     });
 };
 
 onMounted(async () => {
     await getPlatformInfo();
     await checkBluetooth();
+    await initListen();
 });
 onUnmounted(() => {
     stopRetry();

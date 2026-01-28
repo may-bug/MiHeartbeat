@@ -16,7 +16,9 @@
                 "title": "Mi心动",
                 "width": 450,
                 "height": 650,
-                "decorations": false
+                "center": true,
+                "decorations": false,
+                "visible": false
             }
         ],
         "security": {

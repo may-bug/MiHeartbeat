@@ -18,8 +18,6 @@ const MAX_DEVICES: usize = 100;
 const MAC_ADDRESS_LENGTH: usize = 12;
 
 // Linux D-Bus 优化常量
-const DBUS_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
-const OPERATION_DELAY: Duration = Duration::from_millis(300);
 const MAX_RETRIES: u32 = 5;
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
@@ -198,7 +196,7 @@ pub async fn list_devices() -> Result<Vec<DeviceInfo>, String> {
     Ok(all_devices)
 }
 
-/// 选择设备（仅存储，不连接）
+/// 选择设备
 #[tauri::command]
 pub async fn select_device(id: String) -> Result<(), String> {
     let mut state = HEART_RATE_STATE.write().await;
@@ -470,7 +468,7 @@ async fn process_heart_rate_notifications(
     connect_device_linux(adapter, device).await.expect("linux connect");
 
     #[cfg(not(target_os = "linux"))]
-    connect_device_standard(adapter, device).await?;
+    let _=connect_device_standard(adapter, device).await;
 
     // 查找心率服务和特征
     let heart_rate_measurement = find_heart_rate_characteristic_with_retry(device).await?;
@@ -530,7 +528,6 @@ async fn find_heart_rate_characteristic_with_retry(
                 if attempt < MAX_RETRIES {
                     tokio::time::sleep(RECONNECT_DELAY).await;
 
-                    // 重新发现服务
                     #[cfg(target_os = "linux")]
                     {
                         if let Err(e) = timeout(DBUS_OPERATION_TIMEOUT, device.discover_services()).await {

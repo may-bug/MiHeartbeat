@@ -6,7 +6,8 @@
     "main",
     "device",
     "tool",
-    "settings"
+    "settings",
+    "splashscreen"
   ],
   "permissions": [
     "core:default",
