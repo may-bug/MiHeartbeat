@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch:
     inputs:
       version:
         description: 'Release version (e.g., v1.0.0)'
@@ -94,21 +94,6 @@ jobs:
           draft: true
           prerelease: ${{ contains(steps.get_version.outputs.version, '-alpha') || contains(steps.get_version.outputs.version, '-beta') || contains(steps.get_version.outputs.version, '-rc') }}
           generate_release_notes: true
-          body: |
-            ## What's Changed
-            
-            This release includes new features, improvements, and bug fixes.
-            
-            ### Installation
-            
-            Download the appropriate installer for your platform:
-            - **macOS**: `.dmg` file (Apple Silicon & Intel universal binary)
-            - **Windows**: `.msi` or `.exe` installer
-            - **Linux**: `.deb`, `.rpm`, or `.AppImage`
-            
-            ### Checksums
-            
-            See the release assets for `.sig` files containing checksums.
 
   build-tauri:
     name: Build (${{ matrix.platform }})
@@ -177,7 +162,6 @@ jobs:
       - name: Install dependencies (macOS)
         if: matrix.platform == 'macos-14'
         run: |
-          # 检查是否已安装 create-dmg
           if ! command -v create-dmg &> /dev/null; then
             brew install create-dmg
           fi
@@ -188,18 +172,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
             libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev
+            libgtk-3-dev
 
       - name: Install dependencies (Windows)
         if: matrix.platform == 'windows-latest'
+        shell: pwsh
         run: |
-          # WiX Toolset 通常已预装在 GitHub Actions Windows runner 上
-          # choco install wixtoolset -y
+          # WiX is usually pre-installed on GitHub Actions Windows runners
 
       - name: Install pnpm dependencies
         run: pnpm install --frozen-lockfile
@@ -260,7 +243,6 @@ jobs:
               release_id: ${{ needs.create-release.outputs.release_id }}
             });
             
-            // 检查是否有上传的资源
             const { data: assets } = await github.rest.repos.listReleaseAssets({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -303,5 +285,5 @@ jobs:
               });
               console.log('Deleted failed release draft');
             } catch (error) {
-              console.log('Release might have been already deleted or does not exist');
+              console.log('Release might have been already deleted');
             }
