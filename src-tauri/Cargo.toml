@@ -1,6 +1,6 @@
 [package]
 name = "MiHeartbeat"
-version = "1.0.0.260128_alpha"
+version = "1.0.0-alpha"
 description = "手环心率广播桌面端"
 authors = ["maybug"]
 edition = "2021"
