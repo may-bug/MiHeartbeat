@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { platform } from '@tauri-apps/plugin-os';
 import TitleBar from "../components/TitleBar.vue";
@@ -19,6 +19,12 @@ const platformInfo = ref({
     type: ''
 });
 
+const MAX_RETRY_COUNT = 10; // 最大重试次数
+const RETRY_INTERVAL = 3000; // 重试间隔（毫秒）
+
+let retryCount = 0;
+let retryTimer= null;
+
 const getPlatformInfo = async () => {
     try {
         const currentPlatform = platform();
@@ -35,11 +41,65 @@ const getPlatformInfo = async () => {
 };
 
 const checkBluetooth = async () => {
-    let status = await invoke("bluetooth_available");
-    bluetooth.value = status;
-    if (status) {
-        getDeviceList();
+    try {
+        const status = await invoke("bluetooth_available");
+        bluetooth.value = status;
+
+        if (status) {
+            // 蓝牙可用，清除重试计数器和定时器
+            retryCount = 0;
+            if (retryTimer) {
+                clearTimeout(retryTimer);
+                retryTimer = null;
+            }
+            getDeviceList();
+        } else {
+            // 蓝牙不可用，启动轮询
+            startRetry();
+        }
+    } catch (error) {
+        console.error('Failed to check Bluetooth:', error);
+        bluetooth.value = false;
+        startRetry();
     }
+};
+
+const startRetry = () => {
+    // 如果已经有定时器在运行，不要重复启动
+    if (retryTimer) return;
+
+    // 检查是否超过最大重试次数
+    if (retryCount >= MAX_RETRY_COUNT) {
+        console.log('Max retry count reached. Stopping Bluetooth checks.');
+        return;
+    }
+
+    retryCount++;
+    console.log(`Retrying Bluetooth check (${retryCount}/${MAX_RETRY_COUNT})...`);
+
+    retryTimer = setTimeout(() => {
+        retryTimer = null;
+        checkBluetooth();
+    }, RETRY_INTERVAL);
+};
+
+// 手动重置重试
+const resetRetry = () => {
+    retryCount = 0;
+    if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+    }
+    checkBluetooth();
+};
+
+// 停止轮询
+const stopRetry = () => {
+    if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+    }
+    retryCount = 0;
 };
 
 const getDeviceList = async () => {
@@ -61,7 +121,6 @@ const getDeviceList = async () => {
 };
 
 const refreshDeviceList = async () => {
-    console.log("Refreshing device list...");
     await getDeviceList();
 };
 
@@ -97,6 +156,9 @@ const addListeners = () => {
 onMounted(async () => {
     await getPlatformInfo();
     await checkBluetooth();
+});
+onUnmounted(() => {
+    stopRetry();
 });
 </script>
 

@@ -1,18 +1,24 @@
 use std::error::Error;
+use std::time::{Duration, Instant};
 
 use bluest::{btuuid::bluetooth_uuid_from_u16, Adapter, Device, Uuid};
 use futures_lite::stream::StreamExt;
 use serde::Serialize;
-use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
+use tokio::sync::RwLock;
 use tokio::task;
-use std::sync::Arc;
 
+// 常量定义
 const HRS_UUID: Uuid = bluetooth_uuid_from_u16(0x180D);
 const HRM_UUID: Uuid = bluetooth_uuid_from_u16(0x2A37);
+const SCAN_TIMEOUT: Duration = Duration::from_secs(5);
+const SCAN_INTERVAL: Duration = Duration::from_millis(100);
+const DEVICE_TIMEOUT: Duration = Duration::from_millis(500);
+const MAX_DEVICES: usize = 100;
+const MAC_ADDRESS_LENGTH: usize = 12;
 
-// 设备信息
-#[derive(Serialize)]
+/// 设备信息
+#[derive(Debug, Clone, Serialize)]
 pub struct DeviceInfo {
     pub id: String,
     pub mac_address: Option<String>,
@@ -20,342 +26,440 @@ pub struct DeviceInfo {
     pub connected: bool,
 }
 
-// 从设备 ID 中提取 MAC 地址
+/// 心率流状态管理
+static HEART_RATE_TASK: RwLock<Option<tokio::task::JoinHandle<()>>> = RwLock::const_new(None);
+
+/// 从设备 ID 中提取 MAC 地址
 fn extract_mac_address(device_id: &str) -> Option<String> {
-    if let Some(last_part) = device_id.split('#').last() {
-        if last_part.len() >= 12 {
-            let hex_str = last_part.to_uppercase();
-            let hex_only: String = hex_str.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-            if hex_only.len() >= 12 {
-                let mac_bytes: String = hex_only[..12]
-                    .chars()
-                    .collect::<Vec<_>>()
-                    .chunks(2)
-                    .map(|chunk| chunk.iter().collect::<String>())
-                    .collect::<Vec<_>>()
-                    .join(":");
-                return Some(mac_bytes);
-            }
-        }
-    }
-    let hex_only: String = device_id
+    // 优先尝试从分隔符后提取
+    let target = device_id
+        .split('#')
+        .last()
+        .unwrap_or(device_id);
+
+    // 提取十六进制字符
+    let hex_only: String = target
         .chars()
         .filter(|c| c.is_ascii_hexdigit())
+        .take(MAC_ADDRESS_LENGTH)
         .collect();
 
-    if hex_only.len() >= 12 {
-        let mac_bytes: String = hex_only[..12]
-            .chars()
-            .collect::<Vec<_>>()
-            .chunks(2)
-            .map(|chunk| chunk.iter().collect::<String>())
-            .collect::<Vec<_>>()
-            .join(":");
-        return Some(mac_bytes);
+    // 检查长度是否足够
+    if hex_only.len() < MAC_ADDRESS_LENGTH {
+        return None;
     }
 
-    None
+    // 格式化为 MAC 地址格式
+    Some(
+        hex_only
+            .as_bytes()
+            .chunks(2)
+            .map(|chunk| {
+                std::str::from_utf8(chunk)
+                    .unwrap_or("")
+                    .to_uppercase()
+            })
+            .collect::<Vec<_>>()
+            .join(":")
+    )
 }
 
+/// 检查蓝牙适配器是否可用
 #[tauri::command]
 pub async fn bluetooth_available() -> Result<bool, String> {
-    Ok(Adapter::default().await.is_some())
+    // Windows/macOS/Linux 通用检查
+    match Adapter::default().await {
+        Some(adapter) => {
+            // 针对不同平台可能需要不同的超时设置
+            #[cfg(target_os = "windows")]
+            let timeout = std::time::Duration::from_secs(3);
+            
+            #[cfg(target_os = "macos")]
+            let timeout = std::time::Duration::from_secs(2);
+            
+            #[cfg(target_os = "linux")]
+            let timeout = std::time::Duration::from_secs(5);
+            
+            #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+            let timeout = std::time::Duration::from_secs(3);
+            
+            // 使用超时检查可用性
+            match tokio::time::timeout(timeout, adapter.wait_available()).await {
+                Ok(Ok(_)) => Ok(true),
+                Ok(Err(e)) => {
+                    eprintln!("Bluetooth adapter error: {e}");
+                    Ok(false)
+                }
+                Err(_) => {
+                    eprintln!("Bluetooth availability check timeout");
+                    Ok(false)
+                }
+            }
+        }
+        None => Ok(false),
+    }
 }
 
+/// 获取适配器并等待可用
+async fn get_adapter() -> Result<Adapter, String> {
+    let adapter = Adapter::default()
+        .await
+        .ok_or_else(|| "Bluetooth adapter not found".to_string())?;
+    
+    adapter
+        .wait_available()
+        .await
+        .map_err(|e| format!("Adapter not available: {e}"))?;
+    
+    Ok(adapter)
+}
+
+/// 从设备构建设备信息
+async fn device_to_info(device: &Device, connected: bool) -> DeviceInfo {
+    let id = device.id().to_string();
+    let mac_address = extract_mac_address(&id);
+    let name = device.name_async().await.ok();
+    
+    DeviceInfo {
+        id,
+        mac_address,
+        name,
+        connected,
+    }
+}
+
+/// 收集已连接的设备
+async fn collect_connected_devices(
+    adapter: &Adapter,
+    device_ids: &mut std::collections::HashSet<String>,
+) -> Vec<DeviceInfo> {
+    let mut devices = Vec::new();
+    
+    match adapter.connected_devices().await {
+        Ok(connected) => {
+            for device in connected {
+                let id = device.id().to_string();
+                if device_ids.insert(id.clone()) {
+                    devices.push(device_to_info(&device, true).await);
+                }
+            }
+        }
+        Err(e) => eprintln!("Error getting connected devices: {e}"),
+    }
+    
+    devices
+}
+
+/// 扫描并收集新设备
+async fn scan_for_devices(
+    adapter: &Adapter,
+    device_ids: &mut std::collections::HashSet<String>,
+) -> Vec<DeviceInfo> {
+    let mut devices = Vec::new();
+    
+    let Ok(mut scan) = adapter.discover_devices(&[HRS_UUID]).await else {
+        eprintln!("Failed to start device discovery");
+        return devices;
+    };
+    
+    let start = Instant::now();
+    let mut count = 0;
+    
+    while start.elapsed() < SCAN_TIMEOUT && count < MAX_DEVICES {
+        let timeout_result = tokio::time::timeout(SCAN_INTERVAL, scan.next()).await;
+        
+        match timeout_result {
+            Ok(Some(Ok(device))) => {
+                let id = device.id().to_string();
+                if device_ids.insert(id.clone()) {
+                    devices.push(device_to_info(&device, false).await);
+                    count += 1;
+                }
+            }
+            Ok(Some(Err(e))) => {
+                eprintln!("Discovery error: {e}");
+            }
+            Ok(None) => {
+                eprintln!("Scan completed");
+                break;
+            }
+            Err(_) => {
+                // Timeout, continue scanning
+                continue;
+            }
+        }
+    }
+    
+    devices
+}
+
+/// 列出所有可用的蓝牙设备
 #[tauri::command]
 pub async fn list_devices() -> Result<Vec<DeviceInfo>, String> {
-    let adapter = Adapter::default()
-        .await
-        .ok_or("Bluetooth adapter not found")?;
-    adapter.wait_available().await.map_err(|e| format!("{e}"))?;
-
-    // 将适配器包装为 Arc 以便跨线程共享
-    let adapter = Arc::new(adapter);
+    let adapter = get_adapter().await?;
     
-    // 在独立的 tokio 任务中执行蓝牙扫描
-    let scan_task = task::spawn({
-        let adapter = Arc::clone(&adapter);
-        async move {
-            let mut devices = Vec::new();
-            let mut device_ids = std::collections::HashSet::new();
-            
-            eprintln!("Starting device discovery in background thread...");
-            
-            // 连接设备检查逻辑
-            match adapter.connected_devices().await {
-                Ok(connected) => {
-                    for device in connected {
-                        let id: String = device.id().to_string();
-                        if !device_ids.contains(&id) {
-                            device_ids.insert(id.clone());
-                            let name: Option<String> = device.name_async().await.ok();
-                            let mac_address: Option<String> = extract_mac_address(&id);
-                            devices.push(DeviceInfo {
-                                id,
-                                mac_address,
-                                name,
-                                connected: true,
-                            });
-                        }
-                    }
-                }
-                Err(e) => eprintln!("Error getting connected devices: {}", e),
-            }
-            
-            // 设备扫描部分
-            match adapter.discover_devices(&[HRS_UUID]).await {
-                Ok(mut scan) => {
-                    let start = Instant::now();
-                    let timeout = Duration::from_secs(5);
-                    let mut count: usize = 0;
-                    
-                    while start.elapsed() < timeout && count < 100 {
-                        match tokio::time::timeout(Duration::from_millis(100), scan.next()).await {
-                            Ok(Some(Ok(device))) => {
-                                let id: String = device.id().to_string();
-                                if !device_ids.contains(&id) {
-                                    device_ids.insert(id.clone());
-                                    let mac_address: Option<String> = extract_mac_address(&id);
-                                    match device.name_async().await {
-                                        Ok(name) => {
-                                            devices.push(DeviceInfo {
-                                                id,
-                                                mac_address,
-                                                name: Some(name),
-                                                connected: false,
-                                            });
-                                            count += 1;
-                                        }
-                                        Err(_) => {
-                                            devices.push(DeviceInfo {
-                                                id,
-                                                mac_address,
-                                                name: None,
-                                                connected: false,
-                                            });
-                                            count += 1;
-                                        }
-                                    }
-                                }
-                            }
-                            Ok(Some(Err(e))) => {
-                                eprintln!("Discovery error: {}", e);
-                                continue;
-                            }
-                            Ok(None) => {
-                                eprintln!("Scan ended");
-                                break;
-                            }
-                            Err(_) => {
-                                continue;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error starting device discovery: {}", e);
-                }
-            }
-            
-            eprintln!("Background discovery completed. Found {} devices", devices.len());
-            devices
-        }
-    });
+    let mut device_ids = std::collections::HashSet::new();
     
-    // 等待后台任务完成并获取结果
-    match scan_task.await {
-        Ok(devices) => Ok(devices),
-        Err(e) => Err(format!("Background task failed: {}", e)),
-    }
+    eprintln!("Starting device discovery...");
+    
+    // 收集已连接的设备
+    let mut all_devices = collect_connected_devices(&adapter, &mut device_ids).await;
+    
+    // 扫描新设备
+    let scanned_devices = scan_for_devices(&adapter, &mut device_ids).await;
+    all_devices.extend(scanned_devices);
+    
+    eprintln!("Discovery completed. Found {} devices", all_devices.len());
+    
+    Ok(all_devices)
 }
 
+/// 查找并连接指定设备
+async fn find_and_connect_device(
+    adapter: &Adapter,
+    target_id: &str,
+) -> Result<(), String> {
+    // 首先检查已连接的设备
+    if let Ok(connected) = adapter.connected_devices_with_services(&[HRS_UUID]).await {
+        for device in connected {
+            if device.id().to_string() == target_id {
+                return adapter
+                    .connect_device(&device)
+                    .await
+                    .map_err(|e| format!("Failed to connect: {e}"));
+            }
+        }
+    }
+    
+    // 如果未找到，开始扫描
+    let Ok(mut scan) = adapter.discover_devices(&[HRS_UUID]).await else {
+        return Err("Failed to start device discovery".to_string());
+    };
+    
+    let start = Instant::now();
+    
+    while start.elapsed() < SCAN_TIMEOUT {
+        let timeout_result = tokio::time::timeout(DEVICE_TIMEOUT, scan.next()).await;
+        
+        match timeout_result {
+            Ok(Some(Ok(device))) => {
+                if device.id().to_string() == target_id {
+                    return adapter
+                        .connect_device(&device)
+                        .await
+                        .map_err(|e| format!("Failed to connect: {e}"));
+                }
+            }
+            Ok(Some(Err(e))) => {
+                eprintln!("Discovery error: {e}");
+            }
+            Ok(None) => {
+                break;
+            }
+            Err(_) => {
+                // Timeout, continue scanning
+                continue;
+            }
+        }
+    }
+    
+    Err("Device not found".to_string())
+}
+
+/// 选择并连接到指定设备
 #[tauri::command]
 pub async fn select_device(id: String) -> Result<(), String> {
-    let adapter = Adapter::default()
-        .await
-        .ok_or("Bluetooth adapter not found")?;
-    adapter.wait_available().await.map_err(|e| format!("{e}"))?;
-
-    // check connected devices first
-    match adapter.connected_devices_with_services(&[HRS_UUID]).await {
-        Ok(connected) => {
-            for device in connected.into_iter() {
-                if device.id().to_string() == id {
-                    match adapter.connect_device(&device).await {
-                        Ok(_) => return Ok(()),
-                        Err(e) => {
-                            eprintln!("Failed to connect to device: {}", e);
-                            return Err(format!("Failed to connect: {}", e));
-                        }
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error getting connected devices: {}", e);
-        }
-    }
-
-    match adapter.discover_devices(&[HRS_UUID]).await {
-        Ok(mut scan) => {
-            let start = Instant::now();
-            let timeout = Duration::from_secs(5);
-
-            while start.elapsed() < timeout {
-                // 关键修改：为每次next()调用添加独立超时
-                match tokio::time::timeout(Duration::from_millis(500), scan.next()).await {
-                    Ok(Some(Ok(device))) => {
-                        if device.id().to_string() == id {
-                            match adapter.connect_device(&device).await {
-                                Ok(_) => return Ok(()),
-                                Err(e) => return Err(format!("Failed to connect: {}", e)),
-                            }
-                        }
-                    }
-                    Ok(Some(Err(e))) => {
-                        eprintln!("Discovery error: {}", e);
-                        continue;
-                    }
-                    Ok(None) => {
-                        eprintln!("Scan ended");
-                        break;
-                    }
-                    Err(_) => {
-                        // 500毫秒内没收到设备，继续循环
-                        continue;
-                    }
-                }
-            }
-        }
-        Err(e) => eprintln!("Error starting device discovery: {}", e),
-    }
-
-    Err("Device not found".into())
+    let adapter = get_adapter().await?;
+    find_and_connect_device(&adapter, &id).await
 }
 
+/// 查找合适的心率设备
+async fn find_heart_rate_device(
+    adapter: &Adapter,
+    device_id: Option<&str>,
+) -> Result<Device, String> {
+    // 优先使用已连接的设备
+    let connected = adapter
+        .connected_devices_with_services(&[HRS_UUID])
+        .await
+        .map_err(|e| format!("Failed to get connected devices: {e}"))?;
+    
+    if let Some(device) = find_device_in_list(&connected, device_id) {
+        return Ok(device);
+    }
+    
+    // 如果没有找到，开始扫描
+    scan_for_device(adapter, device_id).await
+}
+
+/// 在设备列表中查找指定设备
+fn find_device_in_list(devices: &[Device], target_id: Option<&str>) -> Option<Device> {
+    match target_id {
+        Some(id) => devices
+            .iter()
+            .find(|d| d.id().to_string() == id)
+            .cloned(),
+        None => devices.first().cloned(),
+    }
+}
+
+/// 扫描并查找设备
+async fn scan_for_device(
+    adapter: &Adapter,
+    device_id: Option<&str>,
+) -> Result<Device, String> {
+    let mut scan = adapter
+        .discover_devices(&[HRS_UUID])
+        .await
+        .map_err(|e| format!("Failed to start scan: {e}"))?;
+    
+    let start = Instant::now();
+    
+    while start.elapsed() < SCAN_TIMEOUT {
+        match scan.next().await {
+            Some(Ok(device)) => {
+                let is_target = match device_id {
+                    Some(id) => device.id().to_string() == id,
+                    None => true,
+                };
+                
+                if is_target {
+                    return Ok(device);
+                }
+            }
+            Some(Err(e)) => {
+                eprintln!("Discovery error: {e}");
+            }
+            None => {
+                break;
+            }
+        }
+    }
+    
+    Err("Device not found".to_string())
+}
+
+/// 开始心率数据流
 #[tauri::command]
 pub async fn start_heart_rate_stream(
     app: AppHandle,
     device_id: Option<String>,
 ) -> Result<(), String> {
-    let adapter = Adapter::default()
-        .await
-        .ok_or("Bluetooth adapter not found")?;
-    adapter.wait_available().await.map_err(|e| format!("{e}"))?;
-
-    // try to find a suitable device
-    let device = {
-        // prefer already connected heart rate devices
-        let connected = adapter
-            .connected_devices_with_services(&[HRS_UUID])
-            .await
-            .map_err(|e| format!("{e}"))?;
-
-        if let Some(ref wanted) = device_id {
-            if let Some(d) = connected
-                .into_iter()
-                .find(|d| d.id().to_string() == *wanted)
-            {
-                Some(d)
-            } else {
-                None
-            }
-        } else {
-            connected.into_iter().next()
-        }
-    };
-
-    let device = if let Some(d) = device {
-        d
-    } else {
-        let mut scan = adapter
-            .discover_devices(&[HRS_UUID])
-            .await
-            .map_err(|e| format!("{e}"))?;
-
-        let mut found = None;
-        let start = Instant::now();
-        let timeout = Duration::from_secs(5);
-
-        while start.elapsed() < timeout {
-            match scan.next().await {
-                Some(Ok(d)) => {
-                    if let Some(ref wanted) = device_id {
-                        if d.id().to_string() == *wanted {
-                            found = Some(d);
-                            break;
-                        }
-                    } else {
-                        found = Some(d);
-                        break;
-                    }
-                }
-                Some(Err(e)) => {
-                    eprintln!("Discovery error: {}", e);
-                    continue;
-                }
-                None => {
-                    eprintln!("Scan ended");
-                    break;
-                }
-            }
-        }
-        found.ok_or("Device not found".to_string())?
-    };
-
-    let app_clone = app.clone();
-    let adapter_clone = adapter.clone();
-
-    tauri::async_runtime::spawn(async move {
-        if let Err(_e) = handle_device(&adapter_clone, &device, &app_clone).await {
-            // let _ = app_clone.emit_to("main", "hr/error", format!("{_e}"));
+    // 取消现有任务
+    stop_heart_rate_stream().await;
+    
+    let adapter = get_adapter().await?;
+    let device = find_heart_rate_device(&adapter, device_id.as_deref()).await?;
+    
+    // 启动新任务
+    let task = task::spawn(async move {
+        if let Err(e) = handle_device(&adapter, &device, &app).await {
+            eprintln!("Heart rate stream error: {e}");
+            let _ = app.emit_to("device", "heart-rate-error", format!("{e}"));
         }
     });
-
+    
+    // 保存任务句柄
+    *HEART_RATE_TASK.write().await = Some(task);
+    
     Ok(())
 }
 
+/// 停止心率数据流
 #[tauri::command]
 pub async fn stop_heart_rate_stream() {
-    // Implementation for stopping the heart rate stream
+    let mut task_lock = HEART_RATE_TASK.write().await;
+    
+    if let Some(task) = task_lock.take() {
+        task.abort();
+        eprintln!("Heart rate stream stopped");
+    }
 }
 
+/// 处理设备心率数据
 async fn handle_device(
     adapter: &Adapter,
     device: &Device,
     app: &AppHandle,
 ) -> Result<(), Box<dyn Error>> {
+    // 确保设备已连接
     if !device.is_connected().await {
-        adapter.connect_device(&device).await?;
+        adapter.connect_device(device).await?;
     }
-
-    let heart_rate_services = device.discover_services_with_uuid(HRS_UUID).await?;
+    
+    // 发现心率服务
+    let heart_rate_services = device
+        .discover_services_with_uuid(HRS_UUID)
+        .await?;
+    
     let heart_rate_service = heart_rate_services
         .first()
-        .ok_or("Device should have heart rate service")?;
-
+        .ok_or("Device does not have heart rate service")?;
+    
+    // 发现心率测量特征
     let heart_rate_measurements = heart_rate_service
         .discover_characteristics_with_uuid(HRM_UUID)
         .await?;
+    
     let heart_rate_measurement = heart_rate_measurements
         .first()
-        .ok_or("No HRM characteristic")?;
-
+        .ok_or("No heart rate measurement characteristic found")?;
+    
+    // 开始接收通知
     let mut updates = heart_rate_measurement.notify().await?;
-    while let Some(Ok(heart_rate)) = updates.next().await {
-        let flag = *heart_rate.get(0).ok_or("No flag")?;
-
-        let mut heart_rate_value = *heart_rate.get(1).ok_or("No heart rate u8")? as u16;
-        if flag & 0b00001 != 0 {
-            heart_rate_value |= (*heart_rate.get(2).ok_or("No heart rate u16")? as u16) << 8;
+    
+    while let Some(update_result) = updates.next().await {
+        match update_result {
+            Ok(heart_rate_data) => {
+                match parse_heart_rate(&heart_rate_data) {
+                    Ok(heart_rate_value) => {
+                        let _ = app.emit_to("device", "heart-rate-update", heart_rate_value);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to parse heart rate data: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Heart rate update error: {e}");
+            }
         }
-
-        let mut _sensor_contact = None;
-        if flag & 0b00100 != 0 {
-            _sensor_contact = Some(flag & 0b00010 != 0)
-        }
-        let _ = app.emit_to("device", "heart-rate-update", heart_rate_value);
     }
+    
+    Err("Heart rate notifications ended".into())
+}
 
-    Err("No longer heart rate notify".into())
+/// 解析心率数据
+fn parse_heart_rate(data: &[u8]) -> Result<u16, Box<dyn Error>> {
+    // 检查数据长度
+    if data.is_empty() {
+        return Err("Empty heart rate data".into());
+    }
+    
+    let flags = data[0];
+    
+    // 检查心率值格式（bit 0: 0=uint8, 1=uint16）
+    let heart_rate_value = if flags & 0b0000_0001 != 0 {
+        // 16-bit heart rate value
+        if data.len() < 3 {
+            return Err("Insufficient data for 16-bit heart rate".into());
+        }
+        u16::from_le_bytes([data[1], data[2]])
+    } else {
+        // 8-bit heart rate value
+        if data.len() < 2 {
+            return Err("Insufficient data for 8-bit heart rate".into());
+        }
+        data[1] as u16
+    };
+    
+    // 检查传感器接触状态（bits 1-2）
+    if flags & 0b0000_0100 != 0 {
+        let sensor_contact = flags & 0b0000_0010 != 0;
+        if !sensor_contact {
+            eprintln!("Warning: Sensor contact lost");
+        }
+    }
+    
+    Ok(heart_rate_value)
 }
